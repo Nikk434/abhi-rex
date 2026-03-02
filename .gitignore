@@ -1,0 +1,7 @@
+
+worker_dir_struct.txt
+prototype
+backend/venv
+/worker/venv
+FAKE_UPLOAD
+worker/data
