@@ -1,0 +1,8 @@
+numpy
+opencv-python
+Pillow
+ImageHash
+faiss-cpu
+torch
+tqdm
+git+https://github.com/openai/CLIP.git
