@@ -1,9 +1,17 @@
 # ingest/faiss_utils.py
-from pathlib import Path
 import faiss
-
+import numpy as np
+from pathlib import Path
 from app.config import HNSW_M, EF_CONSTRUCTION
 
+def create_hnsw_index(dim: int):
+    index = faiss.IndexHNSWFlat(dim, HNSW_M)
+    index.hnsw.efConstruction = EF_CONSTRUCTION
+    return faiss.IndexIDMap(index)
+
+
+def create_flat_index(dim: int):
+    return faiss.IndexIDMap(faiss.IndexFlatIP(dim))
 
 def create_faiss_index(dim: int) -> faiss.Index:
     """
