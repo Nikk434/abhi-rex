@@ -22,6 +22,7 @@ FRAME_DIR = INGEST_OUT_DIR / "frames"
 INGEST_META_DB = INGEST_OUT_DIR / "ingest_meta.db"
 
 FAISS_INDEX_FRAMES = INGEST_OUT_DIR / "faiss_index_frames.bin"
+FAISS_INDEX_FRAMES_FLAT = INGEST_OUT_DIR / "faiss_index_frames_flat.bin"
 FAISS_INDEX_PROTOTYPES = INGEST_OUT_DIR / "faiss_index_prototypes.bin"
 
 # -------------------------
