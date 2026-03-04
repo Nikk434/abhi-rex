@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-
+import { validateIngestPayload } from "@/lib/validateIngest"
 const STEPS = {
   UPLOAD: "upload",
   TYPE: "type",
@@ -30,6 +30,7 @@ export default function Home() {
   const [vectors, setVectors] = useState(null);
   // const [submitting, setSubmitting] = useState(false);
   // const [submitError, setSubmitError] = useState("");
+  const [validationErrors, setValidationErrors] = useState([]);
 
   async function handleFile(file) {
     if (!file) return;
@@ -90,47 +91,52 @@ export default function Home() {
   }
 
   async function buildJson() {
-    let result;
-    if (contentType === "video") {
-      result = {
-        video: videoPath,
-        content_id: form.content_id || "",
-        metadata: {
-          title: form.title || "",
-          year: form.year ? parseInt(form.year) : null,
-          type: form.type || "Yt show",
-        },
-      };
-    } else {
-      const season = String(form.season || "").padStart(2, "0");
-      const episode = String(form.episode || "").padStart(2, "0");
-      result = {
-        video: videoPath,
-        content_id: `Series:${form.show_title || ""} S${season}E${episode}`,
-        metadata: {
-          show_id: form.show_id || "",
-          season: form.season ? parseInt(form.season) : null,
-          episode: form.episode ? parseInt(form.episode) : null,
-          title: form.show_title || "",
-          type: "Series",
-        },
-      };
-    }
-
-    setJson(JSON.stringify(result, null, 2));
-    setSubmitting(true);
+    setValidationErrors([]);
     setSubmitError("");
     setJobId(null);
     setJobStatus(null);
     setVectors(null);
+
+    // Build raw payload from form state
+    const raw =
+      contentType === "movie"
+        ? {
+          video: videoPath,
+          metadata: {
+            title: form.title,
+            year: form.year ? parseInt(form.year, 10) : undefined,
+            type: "movie",
+          },
+        }
+        : {
+          video: videoPath,
+          metadata: {
+            show_id: form.show_id,
+            season: form.season ? parseInt(form.season, 10) : undefined,
+            episode: form.episode ? parseInt(form.episode, 10) : undefined,
+            title: form.episode_title,
+            type: "episode",
+          },
+        };
+
+    // Validate
+    const { payload, errors } = validateIngestPayload(raw);
+
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+      return; // hard stop — do not send
+    }
+
+    // Valid — show output and submit
+    setJson(JSON.stringify(payload, null, 2));
+    setSubmitting(true);
     setStep(STEPS.OUTPUT);
 
     try {
-      // 1. Submit ingest job
       const res = await fetch("/api/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(result),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -146,19 +152,16 @@ export default function Home() {
       setJobStatus("pending");
       setSubmitting(false);
 
-      // 2. Poll for result
       const poll = async () => {
         try {
           const r = await fetch(`/api/ingest/${id}/result`);
           const d = await r.json();
           setJobStatus(d.status);
-
           if (d.status === "done") {
             setVectors(d.vectors);
           } else if (d.status === "error") {
-            setSubmitError("Ingest job failed on the server");
+            setSubmitError("Ingest job failed on the server.");
           } else {
-            // still pending or processing — poll again
             setTimeout(poll, 3000);
           }
         } catch (err) {
@@ -184,6 +187,7 @@ export default function Home() {
     setCopied(false);
     setUploadProgress(0);
     setUploadError("");
+    setValidationErrors([]);
   }
 
   function copy() {
@@ -294,8 +298,8 @@ export default function Home() {
             <p className="text-xs text-[#555] mb-4 uppercase tracking-widest">Content type</p>
             <div className="grid grid-cols-2 gap-3">
               {[
-                { key: "video", label: "Movie / YT Video", sub: "Single video entry" },
-                { key: "series", label: "Series Episode", sub: "Season + episode info" },
+                { key: "movie", label: "Movie / YT Video", sub: "Single video entry" },
+                { key: "episode", label: "Series Episode", sub: "Season + episode info" },
               ].map((t) => (
                 <button
                   key={t.key}
@@ -310,43 +314,30 @@ export default function Home() {
           </div>
         )}
 
+
         {/* STEP 3: Details */}
         {step === STEPS.DETAILS && (
           <div>
             <p className="text-xs text-[#555] mb-4 uppercase tracking-widest">
-              {contentType === "video" ? "Video / YT Details" : "Series Details"}
+              {contentType === "movie" ? "Movie Details" : "Series Details"}
             </p>
             <div className="space-y-3">
-              {contentType === "video" ? (
+              {contentType === "movie" ? (
                 <>
                   <div>
-                    <label className="text-[11px] text-[#555] block mb-1">Content ID</label>
-                    <input className={inputClass} placeholder="Show:Show1" onChange={(e) => setForm((f) => ({ ...f, content_id: e.target.value }))} />
+                    <label className="text-[11px] text-[#555] block mb-1">Title</label>
+                    <input className={inputClass} placeholder="Inception" onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
                   </div>
                   <div>
-                    <label className="text-[11px] text-[#555] block mb-1">Title</label>
-                    <input className={inputClass} placeholder="KATSEYE rate your Unpopular Opinions" onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[11px] text-[#555] block mb-1">Year</label>
-                      <input className={inputClass} type="number" placeholder="2024" onChange={(e) => setForm((f) => ({ ...f, year: e.target.value }))} />
-                    </div>
-                    <div>
-                      <label className="text-[11px] text-[#555] block mb-1">Type</label>
-                      <input className={inputClass} placeholder="Yt show" onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} />
-                    </div>
+                    <label className="text-[11px] text-[#555] block mb-1">Year</label>
+                    <input className={inputClass} type="number" placeholder="2010" onChange={(e) => setForm((f) => ({ ...f, year: e.target.value }))} />
                   </div>
                 </>
               ) : (
                 <>
                   <div>
-                    <label className="text-[11px] text-[#555] block mb-1">Show Title</label>
-                    <input className={inputClass} placeholder="Celebrities run across the world" onChange={(e) => setForm((f) => ({ ...f, show_title: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] text-[#555] block mb-1">Show ID (IMDB tt...)</label>
-                    <input className={inputClass} placeholder="tt222" onChange={(e) => setForm((f) => ({ ...f, show_id: e.target.value }))} />
+                    <label className="text-[11px] text-[#555] block mb-1">Show ID</label>
+                    <input className={inputClass} placeholder="prison_break" onChange={(e) => setForm((f) => ({ ...f, show_id: e.target.value }))} />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -358,9 +349,23 @@ export default function Home() {
                       <input className={inputClass} type="number" placeholder="1" onChange={(e) => setForm((f) => ({ ...f, episode: e.target.value }))} />
                     </div>
                   </div>
+                  <div>
+                    <label className="text-[11px] text-[#555] block mb-1">Episode Title</label>
+                    <input className={inputClass} placeholder="Pilot" onChange={(e) => setForm((f) => ({ ...f, episode_title: e.target.value }))} />
+                  </div>
                 </>
               )}
             </div>
+            {validationErrors.length > 0 && (
+              <div className="mt-4 border border-red-900 rounded-lg p-4 bg-[#0d0808]">
+                <p className="text-[11px] text-red-400 uppercase tracking-widest mb-2">Fix before submitting</p>
+                <ul className="space-y-1">
+                  {validationErrors.map((err, i) => (
+                    <li key={i} className="text-xs text-red-300">— {err}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <button
               onClick={buildJson}
               className="mt-6 w-full bg-white text-black text-sm font-medium py-2.5 rounded hover:bg-[#e0e0e0] transition-colors"
