@@ -18,19 +18,16 @@ export default function Home() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [contentType, setContentType] = useState("");
   const [form, setForm] = useState({});
-  const [json, setJson] = useState("");
   const [copied, setCopied] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef();
   const [jobId, setJobId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
-  // const [jobId, setJobId] = useState(null);
-  const [jobStatus, setJobStatus] = useState(null); // "pending" | "processing" | "done" | "error"
-  const [vectors, setVectors] = useState(null);
-  // const [submitting, setSubmitting] = useState(false);
-  // const [submitError, setSubmitError] = useState("");
+  const [jobStatus, setJobStatus] = useState(null); // "queued" | "running" | "done" | "error"
+  const [jobError, setJobError] = useState(null);
   const [validationErrors, setValidationErrors] = useState([]);
+  const [ingestedTitle, setIngestedTitle] = useState("");
 
   async function handleFile(file) {
     if (!file) return;
@@ -95,40 +92,43 @@ export default function Home() {
     setSubmitError("");
     setJobId(null);
     setJobStatus(null);
-    setVectors(null);
+    setJobError(null);
 
-    // Build raw payload from form state
     const raw =
       contentType === "movie"
         ? {
-          video: videoPath,
-          metadata: {
-            title: form.title,
-            year: form.year ? parseInt(form.year, 10) : undefined,
-            type: "movie",
-          },
-        }
+            video: videoPath,
+            metadata: {
+              title: form.title,
+              year: form.year ? parseInt(form.year, 10) : undefined,
+              type: "movie",
+            },
+          }
         : {
-          video: videoPath,
-          metadata: {
-            show_id: form.show_id,
-            season: form.season ? parseInt(form.season, 10) : undefined,
-            episode: form.episode ? parseInt(form.episode, 10) : undefined,
-            title: form.episode_title,
-            type: "episode",
-          },
-        };
+            video: videoPath,
+            metadata: {
+              show_id: form.show_id,
+              season: form.season ? parseInt(form.season, 10) : undefined,
+              episode: form.episode ? parseInt(form.episode, 10) : undefined,
+              title: form.episode_title,
+              type: "episode",
+            },
+          };
 
-    // Validate
     const { payload, errors } = validateIngestPayload(raw);
 
     if (errors.length > 0) {
       setValidationErrors(errors);
-      return; // hard stop — do not send
+      return;
     }
 
-    // Valid — show output and submit
-    setJson(JSON.stringify(payload, null, 2));
+    // Human-readable label for the status screen
+    const label =
+      contentType === "movie"
+        ? `${form.title} (${form.year})`
+        : `${form.show_id} S${String(form.season).padStart(2, "0")}E${String(form.episode).padStart(2, "0")} — ${form.episode_title}`;
+    setIngestedTitle(label);
+
     setSubmitting(true);
     setStep(STEPS.OUTPUT);
 
@@ -149,19 +149,25 @@ export default function Home() {
 
       const id = data.job_id;
       setJobId(id);
-      setJobStatus("pending");
+      setJobStatus("queued");
       setSubmitting(false);
 
       const poll = async () => {
         try {
-          const r = await fetch(`/api/ingest/${id}/result`);
+          const r = await fetch(`/api/ingest/${id}`);
           const d = await r.json();
-          setJobStatus(d.status);
-          if (d.status === "done") {
-            setVectors(d.vectors);
-          } else if (d.status === "error") {
-            setSubmitError("Ingest job failed on the server.");
+
+          // Backend shape: { id, payload, status, error, created_at, started_at, finished_at }
+          const status = d.status; // "queued" | "running" | "done" | "error"
+          setJobStatus(status);
+
+          if (status === "done") {
+            return; // terminal — stop
+          } else if (status === "error") {
+            setJobError(d.error || "Ingest job failed on the server.");
+            return; // terminal — stop
           } else {
+            // "queued" or "running" — keep polling
             setTimeout(poll, 3000);
           }
         } catch (err) {
@@ -176,30 +182,33 @@ export default function Home() {
     }
   }
 
-
   function reset() {
     setStep(STEPS.UPLOAD);
     setVideoPath("");
     setVideoName("");
     setContentType("");
     setForm({});
-    setJson("");
     setCopied(false);
     setUploadProgress(0);
     setUploadError("");
     setValidationErrors([]);
-  }
-
-  function copy() {
-    navigator.clipboard.writeText(json);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setJobId(null);
+    setJobStatus(null);
+    setJobError(null);
+    setSubmitError("");
+    setIngestedTitle("");
   }
 
   const inputClass =
     "w-full bg-[#0d0d0d] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-white placeholder-[#444] focus:outline-none focus:border-[#666] transition-colors";
 
   const stepOrder = [STEPS.UPLOAD, STEPS.TYPE, STEPS.DETAILS, STEPS.OUTPUT];
+
+  const isTerminal =
+    jobStatus === "done" ||
+    jobStatus === "error" ||
+    !!submitError ||
+    !!jobError;
 
   return (
     <main
@@ -228,19 +237,21 @@ export default function Home() {
           {stepOrder.map((s, i) => (
             <div key={s} className="flex items-center gap-2">
               <div
-                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-all duration-300 ${step === s
-                  ? "bg-white text-black font-medium"
-                  : stepOrder.indexOf(step) > i
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-all duration-300 ${
+                  step === s
+                    ? "bg-white text-black font-medium"
+                    : stepOrder.indexOf(step) > i
                     ? "bg-[#2a2a2a] text-[#888]"
                     : "border border-[#2a2a2a] text-[#333]"
-                  }`}
+                }`}
               >
                 {i + 1}
               </div>
               {i < 3 && (
                 <div
-                  className={`w-8 h-px ${stepOrder.indexOf(step) > i ? "bg-[#444]" : "bg-[#1e1e1e]"
-                    }`}
+                  className={`w-8 h-px ${
+                    stepOrder.indexOf(step) > i ? "bg-[#444]" : "bg-[#1e1e1e]"
+                  }`}
                 />
               )}
             </div>
@@ -256,10 +267,11 @@ export default function Home() {
                 onDragLeave={() => setDragging(false)}
                 onDrop={handleDrop}
                 onClick={() => fileRef.current.click()}
-                className={`border rounded-lg p-12 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 ${dragging
-                  ? "border-white bg-[#111]"
-                  : "border-[#222] hover:border-[#444] bg-[#0a0a0a]"
-                  }`}
+                className={`border rounded-lg p-12 flex flex-col items-center justify-center cursor-pointer transition-all duration-200 ${
+                  dragging
+                    ? "border-white bg-[#111]"
+                    : "border-[#222] hover:border-[#444] bg-[#0a0a0a]"
+                }`}
               >
                 <input
                   ref={fileRef}
@@ -313,7 +325,6 @@ export default function Home() {
             </div>
           </div>
         )}
-
 
         {/* STEP 3: Details */}
         {step === STEPS.DETAILS && (
@@ -370,64 +381,96 @@ export default function Home() {
               onClick={buildJson}
               className="mt-6 w-full bg-white text-black text-sm font-medium py-2.5 rounded hover:bg-[#e0e0e0] transition-colors"
             >
-              Generate JSON
+              Generate vectors
             </button>
           </div>
         )}
 
+        {/* STEP 4: Status — no JSON, just result */}
         {step === STEPS.OUTPUT && (
           <div>
-            <p className="text-xs text-[#555] mb-4 uppercase tracking-widest">Output</p>
+            <p className="text-xs text-[#555] mb-6 uppercase tracking-widest">Processing</p>
 
-            <pre className="bg-[#0d0d0d] border border-[#1e1e1e] rounded-lg p-4 text-xs text-[#b0b0b0] overflow-x-auto leading-relaxed">
-              {json}
-            </pre>
+            {/* Content summary card */}
+            <div className="border border-[#1e1e1e] rounded-lg p-4 bg-[#0a0a0a] mb-4">
+              <p className="text-[11px] text-[#444] uppercase tracking-widest mb-1">
+                {contentType === "movie" ? "Movie" : "Episode"}
+              </p>
+              <p className="text-sm text-white truncate">{ingestedTitle}</p>
+              <p className="text-[11px] text-[#2a2a2a] mt-1 truncate">{videoPath}</p>
+            </div>
 
             {/* Status block */}
-            <div className="mt-4 border border-[#1e1e1e] rounded-lg p-4 bg-[#0a0a0a] min-h-[64px] flex items-center">
+            <div className="border border-[#1e1e1e] rounded-lg p-5 bg-[#0a0a0a] min-h-[80px] flex items-center">
+
               {submitting && (
-                <p className="text-xs text-[#555] pulsing">Submitting job...</p>
+                <div className="flex items-center gap-3">
+                  <div className="w-1.5 h-1.5 rounded-full bg-[#555] pulsing" />
+                  <p className="text-xs text-[#555] pulsing">Queuing job...</p>
+                </div>
               )}
 
-              {!submitting && jobStatus && jobStatus !== "done" && !submitError && (
+              {!submitting && (jobStatus === "queued" || jobStatus === "running") && !submitError && (
                 <div className="flex items-center gap-3">
                   <div className="w-1.5 h-1.5 rounded-full bg-yellow-500 pulsing" />
-                  <p className="text-xs text-[#666] capitalize">{jobStatus} — processing video...</p>
-                </div>
-              )}
-
-              {!submitting && jobStatus === "done" && vectors !== null && (
-                <div className="flex items-center justify-between w-full">
-                  <div className="flex items-center gap-3">
-                    <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                    <p className="text-xs text-[#666]">Done</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xl font-medium text-white">{vectors.toLocaleString()}</p>
-                    <p className="text-[10px] text-[#444] uppercase tracking-widest">vectors generated</p>
+                  <div>
+                    <p className="text-xs text-[#888] capitalize">
+                      {jobStatus === "queued" ? "Queued" : "Running"}
+                    </p>
+                    <p className="text-[11px] text-[#444] mt-0.5">
+                      {jobStatus === "queued" ? "Waiting for a worker..." : "Generating vectors..."}
+                    </p>
                   </div>
                 </div>
               )}
 
-              {submitError && (
-                <p className="text-xs text-red-400">{submitError}</p>
+              {!submitting && jobStatus === "done" && (
+                <div className="flex items-center gap-3 w-full">
+                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                  <div>
+                    <p className="text-xs text-green-400">Indexed successfully</p>
+                    <p className="text-[11px] text-[#444] mt-0.5">
+                      Video and metadata stored. Vectors generated.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {!submitting && jobStatus === "error" && (
+                <div className="flex items-start gap-3 w-full">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0 mt-1" />
+                  <div>
+                    <p className="text-xs text-red-400">Ingest failed</p>
+                    <p className="text-[11px] text-red-700 mt-0.5">{jobError || "Unknown error"}</p>
+                  </div>
+                </div>
+              )}
+
+              {!submitting && submitError && jobStatus !== "error" && (
+                <div className="flex items-start gap-3 w-full">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 flex-shrink-0 mt-1" />
+                  <div>
+                    <p className="text-xs text-red-400">Submission error</p>
+                    <p className="text-[11px] text-red-700 mt-0.5">{submitError}</p>
+                  </div>
+                </div>
               )}
             </div>
 
-            <div className="flex gap-3 mt-4">
-              <button
-                onClick={copy}
-                className="flex-1 border border-[#333] text-sm py-2.5 rounded hover:border-[#555] transition-colors"
-              >
-                {copied ? "Copied" : "Copy JSON"}
-              </button>
+            {/* Subtle job ID for debugging */}
+            {jobId && (
+              <p className="text-[10px] text-[#2a2a2a] mt-2 text-right">job #{jobId}</p>
+            )}
+
+            {/* New Entry only appears once job is terminal */}
+            {isTerminal && (
               <button
                 onClick={reset}
-                className="flex-1 bg-white text-black text-sm py-2.5 rounded hover:bg-[#e0e0e0] transition-colors"
+                className="mt-5 w-full bg-white text-black text-sm font-medium py-2.5 rounded hover:bg-[#e0e0e0] transition-colors"
               >
                 New Entry
               </button>
-            </div>
+            )}
           </div>
         )}
       </div>
