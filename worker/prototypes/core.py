@@ -21,13 +21,6 @@ def build_prototypes(
     max_vectors_per_content: int = 2000,
     k: int = 64,
 ) -> int:
-    """
-    Build prototype vectors for given content type.
-
-    Returns:
-        Number of prototype vectors added
-    """
-
     vectors_by_content = load_vectors_by_content(
         conn,
         content_type=content_type,
@@ -37,7 +30,7 @@ def build_prototypes(
     if not vectors_by_content:
         return 0
 
-    proto_index_path = out_dir / PROTOTYPE_INDEX_FILENAME
+    proto_index_path = out_dir / FAISS_INDEX_PROTOTYPES
     proto_index = load_prototype_index(proto_index_path)
 
     next_vector_id = get_max_vector_id(conn) + 1

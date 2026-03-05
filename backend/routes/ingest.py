@@ -1,46 +1,51 @@
 from fastapi import APIRouter, Depends, HTTPException
 import json
-import sqlite3
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from model import IngestRequest, JobResponse
-from deps import get_db, get_ingest_db
+from deps import get_db
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+
 
 @router.post("", response_model=JobResponse)
 def enqueue_ingest(
     req: IngestRequest,
-    db: sqlite3.Connection = Depends(get_db)
+    db: Session = Depends(get_db)
 ):
     payload = json.dumps(req.model_dump())
 
-    cur = db.cursor()
-    cur.execute(
-        """
-        INSERT INTO ingest_jobs (payload, status)
-        VALUES (?, 'pending')
-        """,
-        (payload,)
+    result = db.execute(
+        text("""
+        INSERT INTO jobs (payload, status)
+        VALUES (:payload, 'pending')
+        RETURNING id
+        """),
+        {"payload": payload}
     )
+
+    job_id = result.scalar()
     db.commit()
 
     return {
-        "job_id": cur.lastrowid,
+        "job_id": job_id,
         "status": "pending"
     }
 
 @router.get("/{job_id}/result")
 def ingest_result(
     job_id: int,
-    jobs_db: sqlite3.Connection = Depends(get_db),
-    ingest_db: sqlite3.Connection = Depends(get_ingest_db),
+    db: Session = Depends(get_db),
 ):
-    # 1. check job status
-    cur = jobs_db.execute(
-        "SELECT status, payload FROM ingest_jobs WHERE id = ?",
-        (job_id,)
-    )
-    job = cur.fetchone()
+    job = db.execute(
+        text("""
+        SELECT status, payload
+        FROM jobs
+        WHERE id = :job_id
+        """),
+        {"job_id": job_id}
+    ).mappings().first()
 
     if not job:
         raise HTTPException(404, "Job not found")
@@ -52,22 +57,24 @@ def ingest_result(
             "vectors": None
         }
 
-    # 2. extract content_id
     payload = json.loads(job["payload"])
     content_id = payload.get("content_id")
 
     if not content_id:
-        raise HTTPException(
-            400,
-            "Job payload has no content_id; cannot compute vectors"
-        )
+        return {
+            "job_id": job_id,
+            "status": "done",
+            "vectors": None
+        }
 
-    # 3. count vectors
-    cur = ingest_db.execute(
-        "SELECT COUNT(*) AS cnt FROM vector_mapping WHERE content_id = ?",
-        (content_id,)
-    )
-    row = cur.fetchone()
+    row = db.execute(
+        text("""
+        SELECT COUNT(*) AS cnt
+        FROM ingest.vectors
+        WHERE content_id = :content_id
+        """),
+        {"content_id": content_id}
+    ).mappings().first()
 
     return {
         "job_id": job_id,

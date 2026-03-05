@@ -5,7 +5,7 @@ backend/venv
 /worker/venv
 FAKE_UPLOAD
 worker/data
-/venv
+/root_venv
 requirements.txt
 scan.py 
 test_db.py 

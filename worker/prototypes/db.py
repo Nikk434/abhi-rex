@@ -1,17 +1,17 @@
+from sqlalchemy.orm import Session
+from prototypes.models import PrototypeVector
+
+
 def insert_prototype_vector(
-    conn,
+    conn: Session,
     *,
     vector_id: int,
     content_id: str,
 ):
-    """
-    Register a prototype vector for a content.
-    """
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO prototype_vectors (vector_id, content_id)
-        VALUES (?, ?)
-        """,
-        (vector_id, content_id),
+    row = PrototypeVector(
+        vector_id=vector_id,
+        content_id=content_id,
     )
+
+    conn.add(row)
+    conn.commit()

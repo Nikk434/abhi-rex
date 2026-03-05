@@ -11,7 +11,7 @@ cur = conn.cursor()
 # );
 # """)
 cur.execute("""
-SELECT * FROM ingest_jobs;
+SELECT * FROM jobs;
 """)
 rows = cur.fetchall()
 for row in rows:

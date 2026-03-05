@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 import imagehash
 from tqdm import tqdm
+from sqlalchemy.orm import Session
 
 from app.config import (
     FRAME_DIR,
@@ -32,18 +33,15 @@ from ingest.faiss_utils import create_flat_index, create_hnsw_index
 
 _EP_RE = re.compile(r"[sS](\d{1,2})[eE](\d{1,2})")
 
+
 def safe_filename(s: str) -> str:
-    """
-    Make string safe for Windows filenames.
-    """
     return (
         s.replace(":", "_")
          .replace("/", "_")
          .replace("\\", "_")
     )
-# -------------------------
-# content id inference
-# -------------------------
+
+
 def infer_content_type_and_ids(
     path: str,
     provided_content_id: Optional[str],
@@ -84,12 +82,9 @@ def infer_content_type_and_ids(
     return f"movie:{fname}", metadata
 
 
-# -------------------------
-# public entry
-# -------------------------
 def ingest_job(
     payload: Dict,
-    conn,
+    conn: Session,
     faiss_index,
     faiss_flat,
     embedder: CLIPEmbedder,
@@ -123,14 +118,11 @@ def ingest_job(
     return faiss_index, faiss_flat
 
 
-# -------------------------
-# single video ingest
-# -------------------------
 def _process_single_video(
     video_path: str,
     content_id: str,
     metadata: Dict,
-    conn,
+    conn: Session,
     faiss_index,
     faiss_flat,
     embedder: CLIPEmbedder,
@@ -147,6 +139,7 @@ def _process_single_video(
     added = 0
 
     for ts, frame_num in tqdm(keyframes, desc=f"ingest:{content_id}"):
+
         img_bgr, timestamp = read_frame_at(video_path, frame_num)
         if img_bgr is None or is_bad_frame_bgr(img_bgr):
             continue
@@ -155,13 +148,15 @@ def _process_single_video(
         pil = Image.fromarray(img_rgb)
 
         phash = str(imagehash.phash(pil))
+
         safe_cid = safe_filename(content_id)
         fname = f"{safe_cid}_{int(timestamp * 1000)}.jpg"
-        # fname = f"{content_id.replace('/', '_')}_{int(timestamp * 1000)}.jpg"
         fpath = FRAME_DIR / fname
+
         pil.save(fpath, quality=85)
 
         w, h = pil.size
+
         frame_id = insert_frame(
             conn,
             content_id,
@@ -205,19 +200,17 @@ def _process_single_video(
     return faiss_index
 
 
-# -------------------------
-# embedding flush
-# -------------------------
 def _flush_embeddings(
     images: Iterable[Image.Image],
     meta: Iterable[Tuple[int, str]],
-    conn,
+    conn: Session,
     faiss_index,
     faiss_flat,
     embedder: CLIPEmbedder,
     next_vector_id: int,
     added: int,
 ):
+
     embeddings = embedder.embed_pil_images(list(images))
     if embeddings.size == 0:
         return faiss_index, next_vector_id, added
@@ -231,7 +224,6 @@ def _flush_embeddings(
         dtype=np.int64,
     )
 
-    # faiss_index.add_with_ids(embeddings, ids)
     if faiss_index is None:
         faiss_index = create_hnsw_index(embeddings.shape[1])
 
@@ -240,7 +232,7 @@ def _flush_embeddings(
 
     faiss_index.add_with_ids(embeddings, ids)
     faiss_flat.add_with_ids(embeddings, ids)
-    
+
     for vid, (frame_id, content_id) in zip(ids.tolist(), meta):
         add_vector_mapping(conn, vid, frame_id, content_id)
         add_episode_vector(conn, content_id, vid)

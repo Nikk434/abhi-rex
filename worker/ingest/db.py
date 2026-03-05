@@ -1,87 +1,98 @@
 # ingest/db.py
-import sqlite3
 import json
 from pathlib import Path
 from typing import Optional
+from sqlalchemy import Column, JSON
+from sqlalchemy.orm import declarative_base
+
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    Text,
+    UniqueConstraint,
+    PrimaryKeyConstraint,
+    func,
+)
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+Base = declarative_base()
 
 
-def init_db(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS ingest_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            payload TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            error TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            started_at TIMESTAMP,
-            finished_at TIMESTAMP
-        );
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS content (
-            content_id TEXT PRIMARY KEY,
-            source_path TEXT,
-            show_id TEXT,
-            season INTEGER,
-            episode_number INTEGER,
-            title TEXT,
-            type TEXT,
-            metadata TEXT
-        );
-    """)
+class Content(Base):
+    __tablename__ = "content"
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS frames (
-            frame_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content_id TEXT,
-            timestamp REAL,
-            frame_path TEXT,
-            phash TEXT,
-            width INTEGER,
-            height INTEGER,
-            UNIQUE(content_id, timestamp)
-        );
-    """)
+    # content_id = Column(String, primary_key=True)
+    source_path = Column(String)
+    show_id = Column(String)
+    season = Column(Integer)
+    episode_number = Column(Integer)
+    title = Column(String)
+    # type = Column(String)
+    # metadata = Column(Text)
+    # __tablename__ = "content"
+    __table_args__ = {"schema": "ingest"}
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS vectors (
-            vector_id INTEGER PRIMARY KEY,
-            frame_id INTEGER,
-            content_id TEXT
-        );
-    """)
+    content_id = Column(String, primary_key=True)
+    type = Column(String, nullable=False)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS episode_vectors (
-            content_id TEXT,
-            vector_id INTEGER,
-            PRIMARY KEY(content_id, vector_id)
-        );
-    """)
+    metadata_json = Column("metadata", JSON)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS prototypes (
-            prototype_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            content_id TEXT,
-            vector_id INTEGER
-        );
-    """)
 
-    conn.commit()
-    return conn
+class Frame(Base):
+    __tablename__ = "frames"
+    __table_args__ = (
+        UniqueConstraint("content_id", "timestamp"),
+    )
+
+    frame_id = Column(Integer, primary_key=True, autoincrement=True)
+    content_id = Column(String)
+    timestamp = Column(Float)
+    frame_path = Column(String)
+    phash = Column(String)
+    width = Column(Integer)
+    height = Column(Integer)
+
+
+class Vector(Base):
+    __tablename__ = "vectors"
+
+    vector_id = Column(Integer, primary_key=True)
+    frame_id = Column(Integer)
+    content_id = Column(String)
+
+
+class EpisodeVector(Base):
+    __tablename__ = "episode_vectors"
+    __table_args__ = (
+        PrimaryKeyConstraint("content_id", "vector_id"),
+    )
+
+    content_id = Column(String)
+    vector_id = Column(Integer)
+
+
+class Prototype(Base):
+    __tablename__ = "prototypes"
+
+    prototype_id = Column(Integer, primary_key=True, autoincrement=True)
+    content_id = Column(String)
+    vector_id = Column(Integer)
+
+
+def init_db(session):
+    engine = session.get_bind()
+    Base.metadata.create_all(engine)
 
 
 def insert_content(
-    conn: sqlite3.Connection,
+    conn: Session,
     content_id: str,
     source_path: str,
     metadata: dict
 ):
-    cur = conn.cursor()
-
     show_id = metadata.get("show_id")
     season = metadata.get("season")
     episode_number = metadata.get("episode") or metadata.get("episode_number")
@@ -98,28 +109,27 @@ def insert_content(
 
     metadata_json = json.dumps(metadata)
 
-    cur.execute("""
-        INSERT OR IGNORE INTO content(
-            content_id, source_path, show_id,
-            season, episode_number, title, type, metadata
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        content_id,
-        source_path,
-        show_id,
-        season,
-        episode_number,
-        title,
-        ctype,
-        metadata_json
-    ))
+    existing = conn.get(Content, content_id)
+    if existing:
+        return
 
+    row = Content(
+        content_id=content_id,
+        source_path=source_path,
+        show_id=show_id,
+        season=season,
+        episode_number=episode_number,
+        title=title,
+        type=ctype,
+        metadata=metadata_json
+    )
+
+    conn.add(row)
     conn.commit()
 
 
 def insert_frame(
-    conn: sqlite3.Connection,
+    conn: Session,
     content_id: str,
     timestamp: float,
     frame_path: str,
@@ -127,69 +137,76 @@ def insert_frame(
     width: int,
     height: int
 ) -> int:
-    cur = conn.cursor()
 
-    cur.execute("""
-        INSERT OR IGNORE INTO frames(
-            content_id, timestamp, frame_path, phash, width, height
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        content_id,
-        timestamp,
-        frame_path,
-        phash,
-        width,
-        height
-    ))
+    row = conn.query(Frame).filter(
+        Frame.content_id == content_id,
+        Frame.timestamp == timestamp
+    ).first()
 
+    if row:
+        return row.frame_id
+
+    frame = Frame(
+        content_id=content_id,
+        timestamp=timestamp,
+        frame_path=frame_path,
+        phash=phash,
+        width=width,
+        height=height
+    )
+
+    conn.add(frame)
     conn.commit()
+    conn.refresh(frame)
 
-    cur.execute("""
-        SELECT frame_id
-        FROM frames
-        WHERE content_id = ? AND timestamp = ?
-    """, (content_id, timestamp))
-
-    row = cur.fetchone()
-    return int(row[0])
+    return frame.frame_id
 
 
 def add_vector_mapping(
-    conn: sqlite3.Connection,
+    conn: Session,
     vector_id: int,
     frame_id: int,
     content_id: str
 ):
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR REPLACE INTO vectors(
-            vector_id, frame_id, content_id
-        )
-        VALUES (?, ?, ?)
-    """, (vector_id, frame_id, content_id))
+
+    row = Vector(
+        vector_id=vector_id,
+        frame_id=frame_id,
+        content_id=content_id
+    )
+
+    conn.merge(row)
     conn.commit()
 
 
 def add_episode_vector(
-    conn: sqlite3.Connection,
+    conn: Session,
     content_id: str,
     vector_id: int
 ):
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR IGNORE INTO episode_vectors(
-            content_id, vector_id
-        )
-        VALUES (?, ?)
-    """, (content_id, vector_id))
+
+    exists = conn.query(EpisodeVector).filter(
+        EpisodeVector.content_id == content_id,
+        EpisodeVector.vector_id == vector_id
+    ).first()
+
+    if exists:
+        return
+
+    row = EpisodeVector(
+        content_id=content_id,
+        vector_id=vector_id
+    )
+
+    conn.add(row)
     conn.commit()
 
 
-def get_max_vector_id(conn: sqlite3.Connection) -> int:
-    cur = conn.cursor()
-    cur.execute("SELECT MAX(vector_id) FROM vectors")
-    row = cur.fetchone()
-    if row is None or row[0] is None:
+def get_max_vector_id(conn: Session) -> int:
+
+    val = conn.query(func.max(Vector.vector_id)).scalar()
+
+    if val is None:
         return -1
-    return int(row[0])
+
+    return int(val)
