@@ -7,7 +7,7 @@ export async function GET(request, context) {
   const job_id = params.job_id;
 
   try {
-    const response = await fetch(`${FASTAPI_BASE}/ingest/${job_id}/result`);
+    const response = await fetch(`${FASTAPI_BASE}/jobs/${job_id}`);
     const data = await response.json();
 
     if (!response.ok) {
