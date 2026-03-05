@@ -1,75 +1,55 @@
-# app/job_store.py
-import sqlite3
 from typing import List, Dict
-from pathlib import Path
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, Session
 
 
 JOB_STATUSES = ("pending", "running", "done", "failed")
 
-def init_jobs_db(db_path: Path) -> sqlite3.Connection:
-    """
-    Initialize the ingest_jobs table if it does not exist.
-    This MUST be called once on worker startup.
-    """
-    conn = get_conn(db_path)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS ingest_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            payload TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            error TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            started_at TIMESTAMP,
-            finished_at TIMESTAMP
-        )
-    """)
-
-    conn.commit()
-    return conn
-
-def get_conn(db_path: Path) -> sqlite3.Connection:
-    """
-    Create a SQLite connection suitable for multi-process access.
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(
-        str(db_path),
-        timeout=30,               # wait for locks
-        check_same_thread=False   # worker safety
+def init_jobs_db() -> Session:
+    engine = create_engine(
+        "postgresql+psycopg2://postgres:nik_admin_434@localhost:5432/postgres",
+        pool_pre_ping=True,
     )
-    conn.row_factory = sqlite3.Row
 
-    # sane defaults
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
+    with engine.connect() as conn:
 
-    return conn
+        conn.execute(
+            text("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                id SERIAL PRIMARY KEY,
+                payload JSONB NOT NULL,
+                status TEXT DEFAULT 'pending',
+                error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP
+            )
+            """)
+        )
+
+        conn.commit()
+
+    SessionLocal = sessionmaker(bind=engine)
+    return SessionLocal()
 
 
-def fetch_pending_jobs(
-    conn: sqlite3.Connection,
-    limit: int = 1
-) -> List[Dict]:
-    """
-    Fetch pending jobs in FIFO order.
-    """
-    cur = conn.execute(
-        """
+def fetch_pending_jobs(conn: Session, limit: int = 1) -> List[Dict]:
+    result = conn.execute(
+        text("""
         SELECT *
-        FROM ingest_jobs
+        FROM jobs
         WHERE status = 'pending'
         ORDER BY created_at ASC
-        LIMIT ?
-        """,
-        (limit,)
-    )
-    return [dict(row) for row in cur.fetchall()]
+        LIMIT :limit
+        """),
+        {"limit": limit}
+    ).mappings().all()
+
+    return [dict(row) for row in result]
 
 
-def mark_job_running(conn: sqlite3.Connection, job_id: int) -> None:
+def mark_job_running(conn: Session, job_id: int) -> None:
     _update_job_status(
         conn,
         job_id,
@@ -78,7 +58,7 @@ def mark_job_running(conn: sqlite3.Connection, job_id: int) -> None:
     )
 
 
-def mark_job_done(conn: sqlite3.Connection, job_id: int) -> None:
+def mark_job_done(conn: Session, job_id: int) -> None:
     _update_job_status(
         conn,
         job_id,
@@ -87,40 +67,32 @@ def mark_job_done(conn: sqlite3.Connection, job_id: int) -> None:
     )
 
 
-def mark_job_failed(
-    conn: sqlite3.Connection,
-    job_id: int,
-    error: str
-) -> None:
+def mark_job_failed(conn: Session, job_id: int, error: str) -> None:
     conn.execute(
-        """
-        UPDATE ingest_jobs
+        text("""
+        UPDATE jobs
         SET
             status = 'failed',
-            error = ?,
+            error = :error,
             finished_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
-        (error, job_id)
+        WHERE id = :job_id
+        """),
+        {"error": error, "job_id": job_id}
     )
     conn.commit()
 
 
-def _update_job_status(
-    conn: sqlite3.Connection,
-    job_id: int,
-    status: str,
-    extra_sql: str = ""
-) -> None:
+def _update_job_status(conn: Session, job_id: int, status: str, extra_sql: str = "") -> None:
     if status not in JOB_STATUSES:
         raise ValueError(f"Invalid job status: {status}")
 
     conn.execute(
-        f"""
-        UPDATE ingest_jobs
-        SET status = ? {extra_sql}
-        WHERE id = ?
-        """,
-        (status, job_id)
+        text(f"""
+        UPDATE jobs
+        SET status = :status {extra_sql}
+        WHERE id = :job_id
+        """),
+        {"status": status, "job_id": job_id}
     )
+
     conn.commit()
